@@ -2,14 +2,13 @@
 # https://github.com/pymc-devs/pymc-bart/blob/0f0e3617ac03877448f5eded315e8cb810d1d0cb/pymc_bart/pgbart.py
 
 
-import aesara.tensor as at
+import pytensor.tensor as pt
 import numpy as np
 
-from aeppl.logprob import _logprob
-from aesara.tensor.random.op import RandomVariable
+from pytensor.tensor.random.op import RandomVariable
 from pandas import DataFrame, Series
 
-from pymc.distributions.distribution import Distribution, _moment
+from pymc.distributions.distribution import Distribution, _moment, _logprob
 
 __all__ = ["BART"]
 
@@ -118,11 +117,11 @@ class BART(Distribution):
         -------
         TensorVariable
         """
-        return at.zeros_like(x)
+        return pt.zeros_like(x)
 
     @classmethod
     def get_moment(cls, rv, size, *rv_inputs):
-        mean = at.fill(size, rv.Y.mean())
+        mean = pt.fill(size, rv.Y.mean())
         return mean
 
 

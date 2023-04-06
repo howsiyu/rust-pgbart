@@ -4,9 +4,10 @@
 from time import perf_counter
 
 import numpy as np
-from pymc.aesaraf import inputvars
+from pymc.pytensorf import inputvars
 from pymc.model import modelcontext
-from pymc.step_methods.arraystep import ArrayStepShared, Competence
+from pymc.step_methods.arraystep import ArrayStepShared
+from pymc.step_methods.compound import Competence
 
 from rust_pgbart.bart import BARTRV
 from rust_pgbart.logp import ModelLogPWrapper

@@ -1,19 +1,19 @@
-import aesara
-import aesara.link.numba.dispatch
-import aesara.link.numba.dispatch.basic
+from pytensor.link.numba.dispatch.basic import numba_funcify, numba_njit
+from pytensor.compile.mode import NUMBA
 import numba
 import numba.extending
 import numpy as np
-from aeppl.logprob import CheckParameterValue
-from aesara import function as aesara_function  # type: ignore
+from pymc.logprob.utils import CheckParameterValue
+from pytensor.tensor import scalar_from_tensor
+from pytensor import function as pytensor_function # type: ignore
 from numba import carray, cfunc, float64, literal_unroll, njit, types
 from numba.core import cgutils, types
-from pymc.aesaraf import join_nonshared_inputs, make_shared_replacements
+from pymc.pytensorf import join_nonshared_inputs, make_shared_replacements
 
 
-@aesara.link.numba.dispatch.basic.numba_funcify.register(CheckParameterValue)
-def numba_functify_CheckParameterValue(op, **kwargs):
-    """Provides a numba implementation for CheckParameterValue, which doesn't exist in aesara
+@numba_funcify.register(CheckParameterValue)
+def numba_funcify_CheckParameterValue(op, **kwargs):
+    """Provides a numba implementation for CheckParameterValue, which doesn't exist in pytensor
 
     Full credit goes to nutpie:
     https://github.com/pymc-devs/nutpie/blob/e25525be56cafa8732852acf1e64a8056932f40a/nutpie/compile_pymc.py#L24-L35
@@ -21,7 +21,7 @@ def numba_functify_CheckParameterValue(op, **kwargs):
 
     msg = f"Invalid parameter value {str(op)}"
 
-    @aesara.link.numba.dispatch.basic.numba_njit
+    @numba_njit
     def check(value, *conditions):
         for cond in literal_unroll(conditions):
             if not cond:
@@ -49,17 +49,15 @@ def address_as_void_pointer(typingctx, src):
 class ModelLogPWrapper:
     def __init__(self, model, vars):
 
-        aesara_fn, shared = self.make_aesara_fn(model, vars)
-        self.aesara_fn = aesara_fn
-        self.shared = shared
+        self.pytensor_fn, self.shared = self.make_pytensor_fn(model, vars)
         self.logp_args = self.make_persistent_arrays()
         self.logp = self.generate_logp_function()
 
     def logp_function_pointer(self):
         return self.logp.address
 
-    def make_aesara_fn(self, model, vars):
-        """ Generate an aesara function given the model.
+    def make_pytensor_fn(self, model, vars):
+        """ Generate a pytensor function given the model.
         
         This function will take a single input: BART predictions,
         and return a log-p of the whole model at a given time step.
@@ -69,7 +67,7 @@ class ModelLogPWrapper:
         shared = make_shared_replacements(initial_values, vars, model)
         out_vars = [model.datalogp]
         out_list, inarray0 = join_nonshared_inputs(initial_values, out_vars, vars, shared)
-        function = aesara_function([inarray0], out_list[0], mode=aesara.compile.NUMBA)
+        function = pytensor_function([inarray0], scalar_from_tensor(out_list[0]), mode=NUMBA)
         function.trust_input = True
 
         return function, shared
@@ -78,7 +76,7 @@ class ModelLogPWrapper:
         """ Generate the shared arrays that will be captured by the log-p C function
         """
 
-        arrays = [item.storage[0].copy() for item in self.aesara_fn.input_storage[1:]]
+        arrays = [item.storage[0].copy() for item in self.pytensor_fn.input_storage[1:]]
         assert all(arr.dtype == np.float64 for arr in arrays)
 
         return arrays
@@ -87,7 +85,7 @@ class ModelLogPWrapper:
         """ Update the shared arrays with new data 
         """
         
-        for array, storage in zip(self.logp_args, self.aesara_fn.input_storage[1:]):
+        for array, storage in zip(self.logp_args, self.pytensor_fn.input_storage[1:]):
             new_arr = storage.storage[0]
             assert array.shape == new_arr.shape
 
@@ -101,7 +99,7 @@ class ModelLogPWrapper:
         This is tricky, because Rust expects a function with signature
         fn(predictions) -> float
 
-        But the numba-compiled aesara function has a signature
+        But the numba-compiled pytensor function has a signature
         fn(predictions, *args) -> float
 
         Where args change at each iteration of the algorithm (they are sampled by NUTS)
@@ -114,7 +112,7 @@ class ModelLogPWrapper:
         extra_args = self.logp_args
 
         # Numba-compiled log-p function
-        aesara_logp = self.aesara_fn.vm.jit_fn  # type: ignore
+        pytensor_logp = self.pytensor_fn.vm.jit_fn  # type: ignore
 
         # And now we need to generate some code
         # This is due to limitations in numba support for creating tuples
@@ -143,7 +141,7 @@ class ModelLogPWrapper:
         # the last line simply calls the model logp function
         # [0] because this returns a tuple
         # Note: maybe there is a reason it returns a tuple and [0] will break smth?
-        ret = "    return aesara_logp(data, {})[0]".format(
+        ret = "    return pytensor_logp(data, {})[0]".format(
             ", ".join(f"arg{i}" for i in range(len(extra_args)))
         )
         code.append(ret)
@@ -153,7 +151,7 @@ class ModelLogPWrapper:
         #     data = carray(ptr, (size, ), dtype=float64)
         #     arg0 = carray(12345, (2, ), dtype=float64)
         #     arg1 = carray(56789, (), dtype=float64)
-        #     return aesara_logp(data, arg0, arg1)[0]
+        #     return pytensor_logp(data, arg0, arg1)[0]
         source = "\n".join(code)
 
         # Compile -- we need to pass everyhing in the current scope as "globals"
