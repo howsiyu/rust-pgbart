@@ -1,22 +1,9 @@
 use std::collections::HashMap;
 
 #[derive(Clone)]
-pub struct Leaf {
-    index: usize,
-    value: f64,
-}
-
-#[derive(Clone)]
-pub struct Internal {
-    index: usize,
-    split_idx: usize,
-    split_value: f64,
-}
-
-#[derive(Clone)]
 pub enum Node {
-    Leaf(Leaf),
-    Internal(Internal),
+    Leaf(f64),
+    Internal { split_idx: usize, split_value: f64 },
 }
 
 #[derive(Clone)]
@@ -27,125 +14,55 @@ pub struct Tree {
 #[derive(Debug)]
 pub enum TreeError {
     NotLeaf(usize),
-    NotInternal(usize),
     IndexNotFound(usize),
 }
 
-impl Leaf {
-    // Creates a new leaf
-    pub fn new(index: usize, value: f64) -> Self {
-        Leaf { index, value }
-    }
-
-    // --- Getters ---
-    pub fn value(&self) -> f64 {
-        self.value
-    }
-}
-
-impl Internal {
-    // Creates a new internal node
-    fn new(index: usize, split_idx: usize, value: f64) -> Self {
-        Internal {
-            index,
-            split_idx,
-            split_value: value,
-        }
-    }
-
+impl Tree {
     // Returns the index of the left child for this node
-    fn left(&self) -> usize {
-        self.index * 2 + 1
+    fn left(index: usize) -> usize {
+        index * 2 + 1
     }
 
     // Returns the index of the right child for this node
-    fn right(&self) -> usize {
-        self.index * 2 + 2
-    }
-}
-
-impl Node {
-    // Create an internal node
-    pub fn leaf(index: usize, value: f64) -> Self {
-        Node::Leaf(Leaf::new(index, value))
-    }
-
-    // Create a leaf node
-    pub fn internal(index: usize, split_idx: usize, split_value: f64) -> Self {
-        Node::Internal(Internal::new(index, split_idx, split_value))
-    }
-
-    // Unpacks the node enum into a Leaf struct, or returns an Err
-    pub fn as_leaf(&self) -> Result<&Leaf, TreeError> {
-        match self {
-            Node::Internal(n) => Err(TreeError::NotLeaf(n.index)),
-            Node::Leaf(n) => Ok(n),
-        }
-    }
-
-    // Unpacks the node enum into an Internal struct, or returns an Err
-    fn as_internal(&self) -> Result<&Internal, TreeError> {
-        match self {
-            Node::Internal(n) => Ok(n),
-            Node::Leaf(n) => Err(TreeError::NotInternal(n.index)),
-        }
-    }
-
-    // Returns the index of this node
-    fn index(&self) -> usize {
-        match self {
-            Node::Internal(n) => n.index,
-            Node::Leaf(n) => n.index,
-        }
+    fn right(index: usize) -> usize {
+        index * 2 + 2
     }
 
     // Returns the depth at which this node lives
-    pub fn depth(&self) -> usize {
-        ((self.index() + 1) as f64).log2().floor() as usize
+    pub fn depth(index: usize) -> u32 {
+        (index + 1).ilog2()
     }
-}
 
-impl Tree {
     // Creates a tree with a single root node
     pub fn new(root_value: f64) -> Self {
-        let root = Node::Leaf(Leaf::new(0, root_value));
-        let nodes = HashMap::from_iter([(0, root)]);
+        let nodes = HashMap::from_iter([(0, Node::Leaf(root_value))]);
         Tree { nodes }
     }
 
-    // Returns the root node
-    pub fn root(&self) -> &Node {
-        self.nodes
-            .get(&0)
-            .expect("The tree should always have a root node at index 0")
-    }
-
-    // Returns the node at given index if it exists
-    pub fn get_node(&self, idx: &usize) -> Result<&Node, TreeError> {
-        self.nodes.get(idx).ok_or(TreeError::IndexNotFound(*idx))
-    }
-
-    // Makes sure that the node at given index is a leaf
-    fn check_leaf(&self, idx: usize) -> Result<(), TreeError> {
-        self.get_node(&idx)?.as_leaf()?;
-
-        Ok(())
+    // If a leaf node exists at given index, returns its value
+    pub fn get_leaf_value(&self, idx: usize) -> Result<f64, TreeError> {
+        let node = self.nodes.get(&idx).ok_or(TreeError::IndexNotFound(idx))?;
+        match node {
+            Node::Leaf(v) => Ok(*v),
+            _ => Err(TreeError::NotLeaf(idx))
+        }
     }
 
     // Assigns a new node at a given index
-    fn add_node(&mut self, node: Node) -> &Self {
-        let idx = node.index();
-        self.nodes.insert(idx, node);
-
-        self
+    fn add_leaf_node(&mut self, idx: usize, value: f64) {
+        self.nodes.insert(idx, Node::Leaf(value));
     }
 
     // Updates the value of a leaf node
     pub fn update_leaf_node(&mut self, idx: usize, value: f64) -> Result<(), TreeError> {
-        self.check_leaf(idx)?;
-        self.add_node(Node::leaf(idx, value));
-
-        Ok(())
+        let node = self.nodes.get_mut(&idx).ok_or(TreeError::IndexNotFound(idx))?;
+        match node {
+            Node::Leaf(v) => {
+                *v = value;
+                Ok(())
+            },
+            _ => Err(TreeError::NotLeaf(idx))
+        }
     }
 
     // Turns a leaf node into an internal node with two children
@@ -158,16 +75,20 @@ impl Tree {
         left_value: f64,
         right_value: f64,
     ) -> Result<(usize, usize), TreeError> {
-        self.check_leaf(idx)?;
+        // Check is Leaf
+        let node = self.nodes.get_mut(&idx).ok_or(TreeError::IndexNotFound(idx))?;
+        let Node::Leaf(_) = node else {
+            return Err(TreeError::NotLeaf(idx));
+        };
 
-        // Setup the parent and get the children indices
-        let new = Internal::new(idx, split_idx, split_value);
-        let (lix, rix) = (new.left(), new.right());
+        // Get the children indices
+        let lix = Tree::left(idx);
+        let rix = Tree::right(idx);
 
         // Set the nodes
-        self.add_node(Node::Internal(new));
-        self.add_node(Node::leaf(lix, left_value));
-        self.add_node(Node::leaf(rix, right_value));
+        *node = Node::Internal { split_idx, split_value };
+        self.add_leaf_node(lix, left_value);
+        self.add_leaf_node(rix, right_value);
 
         // Done
         Ok((lix, rix))
@@ -176,34 +97,30 @@ impl Tree {
     // Returns a prediction for a given example
     pub fn predict(&self, x: &Vec<f64>) -> f64 {
         // We start with the root node
-        let mut node = self.root();
+        let mut idx = 0usize;
 
         // And keep searching the tree
-        let result = loop {
-            match node {
+        loop {
+            // We should panic if idx points to nothing
+            let node = self.nodes.get(&idx).unwrap();
+
+            match *node {
                 // Until we find a leaf
-                Node::Leaf(n) => {
-                    break n.value;
+                Node::Leaf(v) => {
+                    return v;
                 }
 
                 // Otherwise we go left or right
-                Node::Internal(n) => {
+                Node::Internal { split_idx, split_value } => {
                     // Depending on the value of the feature
-                    let child_idx = if x[n.split_idx] <= n.split_value {
-                        n.left()
+                    idx = if x[split_idx] <= split_value {
+                        Tree::left(idx)
                     } else {
-                        n.right()
+                        Tree::right(idx)
                     };
-
-                    // We should panic if any internal node points to nothing
-                    let msg = "Internal node should always point to a valid child";
-                    node = self.get_node(&child_idx).expect(msg);
                 }
             }
-        };
-
-        // done
-        result
+        }
     }
 
     // Returns a list of split variables (covariates, features) used by this tree
@@ -211,8 +128,8 @@ impl Tree {
         let mut ret: Vec<usize> = Vec::new();
 
         for item in self.nodes.values() {
-            if let Ok(node) = item.as_internal() {
-                ret.push(node.split_idx);
+            if let Node::Internal { split_idx, .. } = item {
+                ret.push(*split_idx);
             }
         }
 

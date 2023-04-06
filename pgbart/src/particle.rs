@@ -195,8 +195,7 @@ impl Particle {
 
         // Stochastiaclly decide if the node should be split or not
         let msg = "Internal indices are not aligned with the tree";
-        let leaf = self.tree.get_node(&idx).expect(msg);
-        let expand = state.probabilities().sample_expand_flag(leaf.depth());
+        let expand = state.probabilities().sample_expand_flag(Tree::depth(idx));
         if !expand {
             return false;
         }
@@ -251,10 +250,10 @@ impl Particle {
         let mut y_hat: Vec<f64> = vec![0.; self.params.n_points];
 
         for idx in &self.indices.leaf_nodes {
-            let leaf = self.tree.get_node(idx).unwrap().as_leaf().unwrap();
+            let leaf_val = self.tree.get_leaf_value(*idx).unwrap();
             let row_inds = &self.indices.data_indices[idx];
             for i in row_inds {
-                y_hat[*i] = leaf.value();
+                y_hat[*i] = leaf_val;
             }
         }
 

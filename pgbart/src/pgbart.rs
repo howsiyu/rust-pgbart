@@ -69,7 +69,7 @@ impl PgBartSettings {
 
 impl Probabilities {
     // Sample a boolean flag indicating if a node should be split or not
-    pub fn sample_expand_flag(&self, depth: usize) -> bool {
+    pub fn sample_expand_flag(&self, depth: u32) -> bool {
         let mut rng = rand::thread_rng();
 
         let p = 1. - self.alpha.powi(depth as i32);
