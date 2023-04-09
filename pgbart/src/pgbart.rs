@@ -161,7 +161,7 @@ impl PgBartState {
         // We store the trees wrapped with Particle structs since it simplifies the code
         let mut particles: Vec<Particle> = Vec::with_capacity(params.n_trees);
         for _ in 0..params.n_trees {
-            let p_params = ParticleParams::new(X.n_rows, X.n_cols, params.default_kf);
+            let p_params = ParticleParams { n_points: X.n_rows, kfactor: params.default_kf };
             let p = Particle::new(p_params, leaf_value);
             particles.push(p);
         }
@@ -219,21 +219,14 @@ impl PgBartState {
             // where we grow + resample the particles multiple times
             let local_particles = self.grow_particles(rng, local_particles, &local_preds);
 
-            // Normalize all the weights
-            let (_, weights) = self.normalize_weights(&local_particles);
+            let log_weights = local_particles.iter().map(|p| p.log_likelihood).collect();
+            let weights = self.normalize_weights(log_weights);
 
             // Sample a single tree (particle) to be kept for the next iteration of the PG sampler
-            let mut selected = {
+            let selected = {
                 self.probabilities
                     .select_particle(rng, local_particles, &weights)
             };
-
-            // Line 20 of the algo in the paper
-            // "compute particle weight next round"
-            let log_n_particles = (self.params.n_particles as f64).ln();
-            let log_lik = selected.weight().log_likelihood();
-
-            selected.weight_mut().set_log_w(log_lik - log_n_particles);
 
             // Update the probabilities of sampling each covariate if we're in the tuning phase
             // Otherwise update the feature importance counter
@@ -256,20 +249,21 @@ impl PgBartState {
 
         // Reset the weight of the first particle
         {
-            let item = &mut local_particles[0];
-            let preds = math::add(&local_preds, &item.predict());
-            let log_lik = self.data.model_logp(&preds);
-            item.weight_mut().reset(log_lik);
+                let item = &mut local_particles[0];
+                let preds = math::add(&local_preds, &item.predict());
+                let log_lik = self.data.model_logp(&preds);
+                item.log_likelihood = log_lik;
         }
 
         // The rest of the particles starts as empty trees (root node only);
         for _ in 1..self.params.n_particles {
             // Change the kf if we're in the tuning phase
-            let params = if self.tune {
-                let kf = self.probabilities.sample_kf(rng);
-                p.params().with_new_kf(kf)
-            } else {
-                p.params().clone()
+            let params = {
+                let mut params = p.params().clone();
+                if self.tune {
+                    params.kfactor = self.probabilities.sample_kf(rng);
+                }
+                params
             };
 
             // Create and add to the list
@@ -297,8 +291,10 @@ impl PgBartState {
                 break;
             }
 
+            let mut log_weights = vec![0.0; particles.len() - 1];
+
             // We iterate over to_update, keeping the first unchanged
-            for p in &mut particles[1..] {
+            for (i , p) in particles[1..].iter_mut().enumerate() {
                 // Update the tree inside it
                 let needs_update = p.grow(rng, X, self);
 
@@ -306,28 +302,16 @@ impl PgBartState {
                 if needs_update {
                     let preds = math::add(&local_preds, &p.predict());
                     let loglik = self.data.model_logp(&preds);
-                    p.weight_mut().update(loglik);
+                    log_weights[i] = loglik - p.log_likelihood;
+                    p.log_likelihood = loglik;
                 }
             }
 
-            // Normalize the weights of the updatable particles
-            // See the normalize_weights for some helpful break down on how it's done
-            let (wt, weights) = self.normalize_weights(&particles[1..]);
+            let weights = self.normalize_weights(log_weights);
 
             // Note: the weights are of size (n_particles - 1)
             // That's because resample() will keep the first particle anyway
             particles = self.probabilities.resample_particles(rng, particles, &weights);
-
-            // Set the log-weight of the particles 1.. to wt -- log mean weight
-            for p in &mut particles[1..] {
-                p.weight_mut().set_log_w(wt);
-            }
-        }
-
-        // Set the log-weight of each particle to the last log likelihood
-        for p in &mut particles {
-            let loglik = p.weight().log_likelihood();
-            p.weight_mut().set_log_w(loglik);
         }
 
         // Done
@@ -354,37 +338,19 @@ impl PgBartState {
         }
     }
 
-    // Normalize the particle weights
-    fn normalize_weights(&self, particles: &[Particle]) -> (f64, Vec<f64>) {
-        let log_weights = { particles.iter().map(|p| p.weight().log_w()) };
+    fn normalize_weights(&self, log_weights: Vec<f64>) -> Vec<f64> {
+        let max_log_weight = math::max(&log_weights);
 
-        let max_log_weight = {
-            particles
-                .iter()
-                .map(|p| p.weight().log_w())
-                .fold(f64::MIN, |a, b| a.max(b))
+        let scaled_weights: Vec<f64> = {
+            log_weights
+            .into_iter()
+            .map(|x| (x - max_log_weight).exp() + 1e-12)
+            .collect()
         };
 
-        let scaled_log_weights = log_weights.map(|logw| logw - max_log_weight);
+        let w_sum: f64 = scaled_weights.iter().sum();
 
-        // At this point we have
-        // scaled_weights = weights / weights.max()
-        let scaled_weights: Vec<f64> = scaled_log_weights.map(|x| x.exp()).collect();
-
-        // normalized_scaled_weights = weights / weights.sum()
-        let sum_scaled_weights: f64 = scaled_weights.iter().sum();
-        let normalized_scaled_weights: Vec<f64> = scaled_weights
-            .iter()
-            .map(|w| (w / sum_scaled_weights) + 1e-12)
-            .collect();
-
-        // The un-normalized weight assigned to each updatable particle after single growing cycle
-        let log_sum_scaled_weights = sum_scaled_weights.ln();
-        let log_n_particles = (self.params.n_particles as f64).ln();
-        let log_w: f64 = max_log_weight + log_sum_scaled_weights - log_n_particles;
-        // log_w = log ( weights.max() * scaled_weights.mean() )
-
-        (log_w, normalized_scaled_weights)
+        scaled_weights.into_iter().map(|x| x / w_sum).collect()
     }
 
     // Returns the number of trees we should modify in the current phase

@@ -11,9 +11,8 @@ use rand::{self, Rng};
 
 #[derive(Clone)]
 pub struct ParticleParams {
-    n_points: usize, // Number of points in the dataset
-    n_covars: usize, // Number of covariates in the dataset
-    kfactor: f64,    // Standard deviation of noise added during leaf value sampling
+    pub n_points: usize, // Number of points in the dataset
+    pub kfactor: f64,    // Standard deviation of noise added during leaf value sampling
 }
 
 #[derive(Clone)]
@@ -24,72 +23,11 @@ struct Indices {
 }
 
 #[derive(Clone)]
-pub struct Weight {
-    log_w: f64,          // Log weight of this particle
-    log_likelihood: f64, // Log-likelihood from the previous iteration
-}
-
-#[derive(Clone)]
 pub struct Particle {
     params: ParticleParams,
     tree: Tree,
     indices: Indices,
-    weight: Weight,
-}
-
-impl Weight {
-    fn new() -> Self {
-        Weight {
-            log_w: 0.,
-            log_likelihood: 0.,
-        }
-    }
-
-    // Sets the log-weight and log-likelihood of this particle to a fixed value
-    pub fn reset(&mut self, log_likelihood: f64) {
-        self.log_w = log_likelihood;
-        self.log_likelihood = log_likelihood;
-    }
-
-    // Updates the log-weight of this particle, and sets the log-likelohood to a new value
-    pub fn update(&mut self, log_likelihood: f64) {
-        let log_w = self.log_w + log_likelihood - self.log_likelihood;
-
-        self.log_w = log_w;
-        self.log_likelihood = log_likelihood;
-    }
-
-    // --- Getters ---
-    pub fn log_w(&self) -> f64 {
-        self.log_w
-    }
-
-    pub fn log_likelihood(&self) -> f64 {
-        self.log_likelihood
-    }
-
-    // --- Setters ---
-    pub fn set_log_w(&mut self, log_w: f64) {
-        self.log_w = log_w;
-    }
-}
-
-impl ParticleParams {
-    pub fn new(n_points: usize, n_covars: usize, kfactor: f64) -> Self {
-        ParticleParams {
-            n_points,
-            n_covars,
-            kfactor,
-        }
-    }
-
-    pub fn with_new_kf(&self, kfactor: f64) -> Self {
-        ParticleParams {
-            n_points: self.n_points,
-            n_covars: self.n_covars,
-            kfactor,
-        }
-    }
+    pub log_likelihood: f64,
 }
 
 impl Indices {
@@ -141,15 +79,13 @@ impl Indices {
 impl Particle {
     // Creates a new Particle with specified Params and a single-node (root only) Tree
     pub fn new(params: ParticleParams, leaf_value: f64) -> Self {
-        let tree = Tree::new(leaf_value);
-        let indices = Indices::new(params.n_points);
-        let weight = Weight::new();
+        let n_points = params.n_points;
 
         Particle {
             params,
-            tree,
-            indices,
-            weight,
+            tree: Tree::new(leaf_value),
+            indices: Indices::new(n_points),
+            log_likelihood: 0.0,
         }
     }
 
@@ -289,13 +225,5 @@ impl Particle {
 
     pub fn params(&self) -> &ParticleParams {
         &self.params
-    }
-
-    pub fn weight(&self) -> &Weight {
-        &self.weight
-    }
-
-    pub fn weight_mut(&mut self) -> &mut Weight {
-        &mut self.weight
     }
 }
