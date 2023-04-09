@@ -7,6 +7,8 @@ use crate::tree::Tree;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 
+use rand::{self, Rng};
+
 #[derive(Clone)]
 pub struct ParticleParams {
     n_points: usize, // Number of points in the dataset
@@ -159,7 +161,7 @@ impl Particle {
     }
 
     // Creates a copy of the particle, but re-samples the values in leaf nodes
-    pub fn with_resampled_leaves(&self, state: &PgBartState) -> Self {
+    pub fn with_resampled_leaves<R: Rng + ?Sized>(&self, rng: &mut R, state: &PgBartState) -> Self {
         // Make a copy of the tree structure, params etc.
         let mut ret = self.frozen_copy();
 
@@ -171,7 +173,7 @@ impl Particle {
 
             // Ask the PG to generate a new value
             let data_indices = &ret.indices.data_indices[leaf_idx];
-            let value = ret.leaf_value(data_indices, state);
+            let value = ret.leaf_value(rng, data_indices, state);
 
             // Update the tree
             let msg =
@@ -184,7 +186,7 @@ impl Particle {
 
     // Attempts to grow this particle (or, more precisely, the tree inside this particle)
     // Returns a boolean indicating if the tree structure was modified
-    pub fn grow(&mut self, X: &Matrix<f64>, state: &PgBartState) -> bool {
+    pub fn grow<R: Rng + ?Sized>(&mut self, rng: &mut R, X: &Matrix<f64>, state: &PgBartState) -> bool {
         // Check if there are any nodes left to expand
         let idx = match self.indices.pop_expansion_index() {
             Some(value) => value,
@@ -195,52 +197,49 @@ impl Particle {
 
         // Stochastiaclly decide if the node should be split or not
         let msg = "Internal indices are not aligned with the tree";
-        let expand = state.probabilities().sample_expand_flag(Tree::depth(idx));
+        let expand = state.probabilities().sample_expand_flag(rng, Tree::depth(idx));
         if !expand {
             return false;
         }
 
         // Get the examples that were routed to this leaf
         let rows = self.indices.get_data_indices(idx).expect(msg);
-        let split_idx = state.probabilities().sample_split_index();
+        let split_idx = state.probabilities().sample_split_index(rng);
         let feature_values = X.select_rows(rows, &split_idx);
 
         // And see if we can split them into two groups
-        match state.probabilities().sample_split_value(&feature_values) {
-            None => {
-                return false;
-            }
-
-            Some(split_value) => {
-                // Now we have everything (leaf_idx, split_idx, split_value)
-                // So we can split the leaf into an internal node
-
-                // Now route the data points into left / right child
-                let data_inds = self.split_data(&rows, &feature_values, &split_value);
-
-                // Ask the sampler to generate values for the new leaves to be added
-                let leaf_vals = (
-                    self.leaf_value(&data_inds.0, state),
-                    self.leaf_value(&data_inds.1, state),
-                );
-                let (left_value, right_value) = leaf_vals;
-
-                // Update the tree
-                let msg = "Splitting a leaf failed, meaning the indices in particle were not consistent with the tree";
-                let ret = self.tree.split_leaf_node(idx, split_idx, split_value, left_value, right_value);
-                let new_inds = ret.expect(msg);
-
-                // Remove the old index, we won't need it anymore
-                self.indices.remove_index(idx);
-
-                // Add the new leaves into expansion nodes etc.
-                self.indices.add_index(new_inds.0, data_inds.0);
-                self.indices.add_index(new_inds.1, data_inds.1);
-
-                // Signal that the structure was updated
-                return true;
-            }
+        if feature_values.len() == 0 {
+            return false;
         }
+
+        let split_value = state.probabilities().sample_split_value(rng, &feature_values);
+        // Now we have everything (leaf_idx, split_idx, split_value)
+        // So we can split the leaf into an internal node
+
+        // Now route the data points into left / right child
+        let data_inds = self.split_data(&rows, &feature_values, &split_value);
+
+        // Ask the sampler to generate values for the new leaves to be added
+        let leaf_vals = (
+            self.leaf_value(rng, &data_inds.0, state),
+            self.leaf_value(rng, &data_inds.1, state),
+        );
+        let (left_value, right_value) = leaf_vals;
+
+        // Update the tree
+        let msg = "Splitting a leaf failed, meaning the indices in particle were not consistent with the tree";
+        let ret = self.tree.split_leaf_node(idx, split_idx, split_value, left_value, right_value);
+        let new_inds = ret.expect(msg);
+
+        // Remove the old index, we won't need it anymore
+        self.indices.remove_index(idx);
+
+        // Add the new leaves into expansion nodes etc.
+        self.indices.add_index(new_inds.0, data_inds.0);
+        self.indices.add_index(new_inds.1, data_inds.1);
+
+        // Signal that the structure was updated
+        true
     }
 
     // Generate predictions for this particle.
@@ -282,7 +281,7 @@ impl Particle {
     }
 
     // Returns a new sampled leaf value
-    fn leaf_value(&self, data_indices: &Vec<usize>, state: &PgBartState) -> f64 {
+    fn leaf_value<R: Rng + ?Sized>(&self, rng: &mut R, data_indices: &Vec<usize>, state: &PgBartState) -> f64 {
         // TODO: This feels a bit off
         // This function takes as input indices of data points that ended in a particular leaf
         // Then calls the Sampler to fetch the predicted values for those data points
@@ -298,7 +297,7 @@ impl Particle {
         
         let value = state
             .probabilities()
-            .sample_leaf_value(mu, self.params.kfactor);
+            .sample_leaf_value(rng, mu, self.params.kfactor);
 
         value
     }

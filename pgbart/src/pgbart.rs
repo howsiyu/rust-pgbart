@@ -69,74 +69,50 @@ impl PgBartSettings {
 
 impl Probabilities {
     // Sample a boolean flag indicating if a node should be split or not
-    pub fn sample_expand_flag(&self, depth: u32) -> bool {
-        let mut rng = rand::thread_rng();
-
-        let p = 1. - self.alpha.powi(depth as i32);
-        let res = p < rng.gen::<f64>();
-
-        res
+    pub fn sample_expand_flag<R: Rng + ?Sized>(&self, rng: &mut R, depth: u32) -> bool {
+        let p = self.alpha.powi(depth as i32);
+        rng.gen_bool(p)
     }
 
     // Sample a new value for a leaf node
-    pub fn sample_leaf_value(&self, mu: f64, kfactor: f64) -> f64 {
-        let mut rng = rand::thread_rng();
-
-        let norm = self.normal.sample(&mut rng) * kfactor;
-
-        norm + mu
+    pub fn sample_leaf_value<R: Rng + ?Sized>(&self, rng: &mut R, mu: f64, kfactor: f64) -> f64 {
+        mu + kfactor * self.normal.sample(rng)
     }
 
     // Sample the index of a feature to split on
-    pub fn sample_split_index(&self) -> usize {
-        let mut rng = rand::thread_rng();
-
-        let p = rng.gen::<f64>();
+    pub fn sample_split_index<R: Rng + ?Sized>(&self, rng: &mut R) -> usize {
+        let p: f64 = rng.gen();
         for (idx, value) in self.spliting_probs.iter().enumerate() {
-            if p <= *value {
+            if p < *value {
                 return idx;
             }
         }
 
-        self.spliting_probs.len() - 1
+        unreachable!();
     }
 
     // Sample a boolean flag indicating if a node should be split or not
-    pub fn sample_split_value(&self, candidates: &Vec<f64>) -> Option<f64> {
-        let mut rng = rand::thread_rng();
-
-        if candidates.len() == 0 {
-            None
-        } else {
-            let dist = Uniform::<usize>::new(0, candidates.len());
-            let idx = dist.sample(&mut rng);
-            Some(candidates[idx])
-        }
+    pub fn sample_split_value<R: Rng + ?Sized>(&self, rng: &mut R, candidates: &Vec<f64>) -> f64 {
+        let idx = rng.gen_range(0..candidates.len());
+        candidates[idx]
     }
 
     // Sample a new kf
-    pub fn sample_kf(&self) -> f64 {
-        let mut rng = rand::thread_rng();
-        let kf = self.uniform.sample(&mut rng);
-
-        kf
+    pub fn sample_kf<R: Rng + ?Sized>(&self, rng: &mut R) -> f64 {
+        self.uniform.sample(rng)
     }
 
     // Sample an index according to normalized weights
-    pub fn select_particle(&self, mut particles: Vec<Particle>, weights: &Vec<f64>) -> Particle {
-        let mut rng = rand::thread_rng();
-
+    pub fn select_particle<R: Rng + ?Sized>(&self, rng: &mut R, mut particles: Vec<Particle>, weights: &Vec<f64>) -> Particle {
         let dist = WeightedIndex::new(weights).unwrap();
-        let idx = dist.sample(&mut rng);
+        let idx = dist.sample(rng);
         let selected = particles.swap_remove(idx);
 
         selected
     }
 
     // Resample the particles according to the weights vector
-    fn resample_particles(&self, particles: Vec<Particle>, weights: &Vec<f64>) -> Vec<Particle> {
-        let mut rng = rand::thread_rng();
-
+    fn resample_particles<R: Rng + ?Sized>(&self, rng: &mut R, particles: Vec<Particle>, weights: &Vec<f64>) -> Vec<Particle> {
         let dist = WeightedIndex::new(weights).unwrap();
         let mut ret: Vec<Particle> = Vec::with_capacity(particles.len());
 
@@ -152,7 +128,7 @@ impl Probabilities {
         ret.push(particles[0].clone());
         ret.push(particles[1].clone());
         for _ in 2..particles.len() {
-            let idx = dist.sample(&mut rng) + 2;
+            let idx = dist.sample(rng) + 2;
             ret.push(particles[idx].clone());
         }
 
@@ -216,12 +192,12 @@ impl PgBartState {
 
     pub fn step(&mut self) {
         // Setup
-        let mut rng = rand::thread_rng();
+        let rng = &mut rand::thread_rng();
 
         // Get the indices of the trees we'll be modifying
         let amount = self.num_to_update();
         let length = self.params.n_trees;
-        let indices = rand::seq::index::sample(&mut rng, length, amount);
+        let indices = rand::seq::index::sample(rng, length, amount);
 
         // Get the default prediction for a new particle
         let y = self.data.y();
@@ -238,11 +214,11 @@ impl PgBartState {
             // local_particles has size n_particles
             // and all particles in local_particles
             // essentially are modifications of a single tree
-            let local_particles = self.initialize_particles(selected_p, &local_preds, mu);
+            let local_particles = self.initialize_particles(rng, selected_p, &local_preds, mu);
 
             // Now we run the inner loop
             // where we grow + resample the particles multiple times
-            let local_particles = self.grow_particles(local_particles, &local_preds);
+            let local_particles = self.grow_particles(rng, local_particles, &local_preds);
 
             // Normalize all the weights
             let (_, weights) = self.normalize_weights(&local_particles);
@@ -250,7 +226,7 @@ impl PgBartState {
             // Sample a single tree (particle) to be kept for the next iteration of the PG sampler
             let mut selected = {
                 self.probabilities
-                    .select_particle(local_particles, &weights)
+                    .select_particle(rng, local_particles, &weights)
             };
 
             // Line 20 of the algo in the paper
@@ -272,12 +248,12 @@ impl PgBartState {
         }
     }
 
-    fn initialize_particles(&self, p: &Particle, local_preds: &Vec<f64>, mu: f64) -> Vec<Particle> {
+    fn initialize_particles<R: Rng + ?Sized>(&self, rng: &mut R, p: &Particle, local_preds: &Vec<f64>, mu: f64) -> Vec<Particle> {
         // The first particle is the exact copy of the selected tree
         let p0 = p.frozen_copy();
 
         // The second particle retains the tree structure, but re-samples the leaf values
-        let p1 = p.with_resampled_leaves(self);
+        let p1 = p.with_resampled_leaves(rng, self);
 
         // Initialize the vector
         let mut local_particles = vec![p0, p1];
@@ -293,7 +269,7 @@ impl PgBartState {
         for _ in 2..self.params.n_particles {
             // Change the kf if we're in the tuning phase
             let params = if self.tune {
-                let kf = self.probabilities.sample_kf();
+                let kf = self.probabilities.sample_kf(rng);
                 p.params().with_new_kf(kf)
             } else {
                 p.params().clone()
@@ -308,8 +284,9 @@ impl PgBartState {
         local_particles
     }
 
-    fn grow_particles(
+    fn grow_particles<R: Rng + ?Sized>(
         &self,
+        rng : &mut R,
         mut particles: Vec<Particle>,
         local_preds: &Vec<f64>,
     ) -> Vec<Particle> {
@@ -326,7 +303,7 @@ impl PgBartState {
             // We iterate over to_update, keeping the first two unchanged
             for p in &mut particles[2..] {
                 // Update the tree inside it
-                let needs_update = p.grow(X, self);
+                let needs_update = p.grow(rng, X, self);
 
                 // Update the weight if needed
                 if needs_update {
@@ -342,7 +319,7 @@ impl PgBartState {
 
             // Note: the weights are of size (n_particles - 2)
             // That's because resmple() will keep the first two particles anyway
-            particles = self.probabilities.resample_particles(particles, &weights);
+            particles = self.probabilities.resample_particles(rng, particles, &weights);
 
             // Set the log-weight of the particles 2.. to wt -- log mean weight
             for p in &mut particles[2..] {
