@@ -116,7 +116,7 @@ impl Probabilities {
         let dist = WeightedIndex::new(weights).unwrap();
         let mut ret: Vec<Particle> = Vec::with_capacity(particles.len());
 
-        if weights.len() != (particles.len() - 2) {
+        if weights.len() != (particles.len() - 1) {
             panic!("Weights and particles mismatch");
         }
 
@@ -126,9 +126,8 @@ impl Probabilities {
         // and using "swap_remove" will mess up the alignment between weights and particles
         // so "cloning" everything might be the best choice actually?
         ret.push(particles[0].clone());
-        ret.push(particles[1].clone());
-        for _ in 2..particles.len() {
-            let idx = dist.sample(rng) + 2;
+        for _ in 1..particles.len() {
+            let idx = dist.sample(rng) + 1;
             ret.push(particles[idx].clone());
         }
 
@@ -252,21 +251,19 @@ impl PgBartState {
         // The first particle is the exact copy of the selected tree
         let p0 = p.frozen_copy();
 
-        // The second particle retains the tree structure, but re-samples the leaf values
-        let p1 = p.with_resampled_leaves(rng, self);
-
         // Initialize the vector
-        let mut local_particles = vec![p0, p1];
+        let mut local_particles = vec![p0];
 
-        // Reset the weights on the first two particles
-        for item in &mut local_particles {
+        // Reset the weight of the first particle
+        {
+            let item = &mut local_particles[0];
             let preds = math::add(&local_preds, &item.predict());
             let log_lik = self.data.model_logp(&preds);
             item.weight_mut().reset(log_lik);
         }
 
         // The rest of the particles starts as empty trees (root node only);
-        for _ in 2..self.params.n_particles {
+        for _ in 1..self.params.n_particles {
             // Change the kf if we're in the tuning phase
             let params = if self.tune {
                 let kf = self.probabilities.sample_kf(rng);
@@ -300,8 +297,8 @@ impl PgBartState {
                 break;
             }
 
-            // We iterate over to_update, keeping the first two unchanged
-            for p in &mut particles[2..] {
+            // We iterate over to_update, keeping the first unchanged
+            for p in &mut particles[1..] {
                 // Update the tree inside it
                 let needs_update = p.grow(rng, X, self);
 
@@ -315,14 +312,14 @@ impl PgBartState {
 
             // Normalize the weights of the updatable particles
             // See the normalize_weights for some helpful break down on how it's done
-            let (wt, weights) = self.normalize_weights(&particles[2..]);
+            let (wt, weights) = self.normalize_weights(&particles[1..]);
 
-            // Note: the weights are of size (n_particles - 2)
-            // That's because resmple() will keep the first two particles anyway
+            // Note: the weights are of size (n_particles - 1)
+            // That's because resample() will keep the first particle anyway
             particles = self.probabilities.resample_particles(rng, particles, &weights);
 
-            // Set the log-weight of the particles 2.. to wt -- log mean weight
-            for p in &mut particles[2..] {
+            // Set the log-weight of the particles 1.. to wt -- log mean weight
+            for p in &mut particles[1..] {
                 p.weight_mut().set_log_w(wt);
             }
         }

@@ -53,18 +53,6 @@ impl Tree {
         self.nodes.insert(idx, Node::Leaf(value));
     }
 
-    // Updates the value of a leaf node
-    pub fn update_leaf_node(&mut self, idx: usize, value: f64) -> Result<(), TreeError> {
-        let node = self.nodes.get_mut(&idx).ok_or(TreeError::IndexNotFound(idx))?;
-        match node {
-            Node::Leaf(v) => {
-                *v = value;
-                Ok(())
-            },
-            _ => Err(TreeError::NotLeaf(idx))
-        }
-    }
-
     // Turns a leaf node into an internal node with two children
     // Returns the indices of newly created leaves
     pub fn split_leaf_node(

@@ -160,30 +160,6 @@ impl Particle {
         ret
     }
 
-    // Creates a copy of the particle, but re-samples the values in leaf nodes
-    pub fn with_resampled_leaves<R: Rng + ?Sized>(&self, rng: &mut R, state: &PgBartState) -> Self {
-        // Make a copy of the tree structure, params etc.
-        let mut ret = self.frozen_copy();
-
-        for leaf_idx in &ret.indices.leaf_nodes {
-            // We don't resample the root
-            if *leaf_idx == 0 {
-                continue;
-            }
-
-            // Ask the PG to generate a new value
-            let data_indices = &ret.indices.data_indices[leaf_idx];
-            let value = ret.leaf_value(rng, data_indices, state);
-
-            // Update the tree
-            let msg =
-                "The indices stored in self.indices are not consistent with the tree structure";
-            ret.tree.update_leaf_node(*leaf_idx, value).expect(msg);
-        }
-
-        ret
-    }
-
     // Attempts to grow this particle (or, more precisely, the tree inside this particle)
     // Returns a boolean indicating if the tree structure was modified
     pub fn grow<R: Rng + ?Sized>(&mut self, rng: &mut R, X: &Matrix<f64>, state: &PgBartState) -> bool {
