@@ -1,6 +1,5 @@
 #![allow(non_snake_case)]
 
-use rand::distributions::WeightedIndex;
 use rand_distr::{Distribution, Normal, Uniform};
 
 use crate::math::{self, Matrix};
@@ -91,6 +90,24 @@ impl Probabilities {
         unreachable!();
     }
 
+    pub fn systematic_sample<R: Rng + ?Sized>(&self, rng: &mut R, weights : &Vec<f64>, n : usize) -> Vec<usize> {
+        let w_sum: f64 = weights.iter().sum();
+        let mut p: f64 = rng.gen();
+        let mut acc = 0.0;
+        let mut ret = Vec::with_capacity(n);
+        let n = n as f64;
+
+        for (idx, &w) in weights.iter().enumerate() {
+            acc += w;
+            if p / n * w_sum < acc {
+                ret.push(idx);
+                p += 1.0;
+            }
+        }
+
+        ret
+    }
+
     // Sample a boolean flag indicating if a node should be split or not
     pub fn sample_split_value<R: Rng + ?Sized>(&self, rng: &mut R, candidates: &Vec<f64>) -> f64 {
         let idx = rng.gen_range(0..candidates.len());
@@ -104,8 +121,7 @@ impl Probabilities {
 
     // Sample an index according to normalized weights
     pub fn select_particle<R: Rng + ?Sized>(&self, rng: &mut R, mut particles: Vec<Particle>, weights: &Vec<f64>) -> Particle {
-        let dist = WeightedIndex::new(weights).unwrap();
-        let idx = dist.sample(rng);
+        let idx = self.systematic_sample(rng, weights, 1)[0];
         let selected = particles.swap_remove(idx);
 
         selected
@@ -113,12 +129,12 @@ impl Probabilities {
 
     // Resample the particles according to the weights vector
     fn resample_particles<R: Rng + ?Sized>(&self, rng: &mut R, particles: Vec<Particle>, weights: &Vec<f64>) -> Vec<Particle> {
-        let dist = WeightedIndex::new(weights).unwrap();
-        let mut ret: Vec<Particle> = Vec::with_capacity(particles.len());
-
         if weights.len() != (particles.len() - 1) {
             panic!("Weights and particles mismatch");
         }
+
+        let idxs = self.systematic_sample(rng, weights, weights.len());
+        let mut ret: Vec<Particle> = Vec::with_capacity(particles.len());
 
         // TODO: could this be optimized? Keep in mind that borrow checker
         // will not let us "move" any item out of a vector
@@ -126,9 +142,8 @@ impl Probabilities {
         // and using "swap_remove" will mess up the alignment between weights and particles
         // so "cloning" everything might be the best choice actually?
         ret.push(particles[0].clone());
-        for _ in 1..particles.len() {
-            let idx = dist.sample(rng) + 1;
-            ret.push(particles[idx].clone());
+        for idx in idxs {
+            ret.push(particles[idx + 1].clone());
         }
 
         ret
